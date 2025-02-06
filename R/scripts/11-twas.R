@@ -56,13 +56,11 @@ theme_update(
 ### Functions ======================================================================================
 find_tissue <- function(
   files,
-  type = "rsem",
+  type = "rsem", # or "matrix"
   tpm_threshold = 100,
-  url = "https://storage.googleapis.com/gtex_analysis_v8/rna_seq_data/GTEx_Analysis_2017-06-05_v8_RNASeQCv1.1.9_gene_median_tpm.gct.gz"
+  # url = "https://storage.googleapis.com/gtex_analysis_v8/rna_seq_data/GTEx_Analysis_2017-06-05_v8_RNASeQCv1.1.9_gene_median_tpm.gct.gz" # ancien chemin
+  url = "https://storage.googleapis.com/adult-gtex/bulk-gex/v8/rna-seq/GTEx_Analysis_2017-06-05_v8_RNASeQCv1.1.9_gene_median_tpm.gct.gz"
 ) {
-  if (type != "rsem" || !all(grepl("genes.results$", files))) {
-    stop("Only RSEM gene files are supported!", call. = FALSE)
-  }
 
   gtex_raw_data <- data.table::fread(url)[, -c("Description")]
 
@@ -79,48 +77,101 @@ find_tissue <- function(
     on = c("Name")
   ]
 
-  samples_tissue <- Reduce(
-    f = function(x, y) {
-      merge(x, y, by = "Tissue", all = TRUE)[
-        j =  `:=`(gene_id = sub("\\..*$", "", gene_id))
-      ]
-    },
-    x = lapply(
-      X = files,
-      .gtex = gtex_markers,
-      FUN = function(.file, .gtex) {
-        out <- merge(
-          x = .gtex,
-          y = data.table::fread(
-            file = .file,
-            select = c("gene_id", "TPM"),
-            col.names = c("Name", "sample_tpm")
-          ),
-          by = "Name",
-          all = FALSE
-        )[
-          i = sample_tpm >= tpm_threshold & TPM >= sample_tpm,
-          j = .N,
-          by = "Tissue"
+  if (type == "rsem") {
+    samples_tissue <- Reduce(
+      f = function(x, y) {
+        merge(x, y, by = "Tissue", all = TRUE)[
+          j =  `:=`(gene_id = sub("\\..*$", "", gene_id))
         ]
-        data.table::setnames(out, old = "N", new = gsub(".genes.results$", "", basename(.file)))
-      }
+      },
+      x = lapply(
+        X = files,
+        .gtex = gtex_markers,
+        FUN = function(.file, .gtex) {
+          out <- merge(
+            x = .gtex,
+            y = data.table::fread(
+              file = .file,
+              select = c("gene_id", "TPM"),
+              col.names = c("Name", "sample_tpm")
+            ),
+            by = "Name",
+            all = FALSE
+          )[
+            i = sample_tpm >= tpm_threshold & TPM >= sample_tpm,
+            j = .N,
+            by = "Tissue"
+          ]
+          data.table::setnames(out, old = "N", new = gsub(".genes.results$", "", basename(.file)))
+        }
+      )
     )
-  )
 
-  class(samples_tissue) <- c("tissue", class(samples_tissue))
+    class(samples_tissue) <- c("tissue", class(samples_tissue))
 
-  data.table::setnafill(
-    x = samples_tissue,
-    fill = 0,
-    cols = setdiff(names(samples_tissue), "Tissue")
-  )[
-    j = .(
-      Tissue = Tissue[order(- rowMeans(.SD) / sum(rowMeans(.SD)))],
-      .SD[order(- rowMeans(.SD) / sum(rowMeans(.SD)))]
-    ),
-    .SDcols = gsub(".genes.results$", "", basename(files))
-  ]
+    samples_tissue <- data.table::setnafill(
+      x = samples_tissue,
+      fill = 0,
+      cols = setdiff(names(samples_tissue), "Tissue")
+    )[
+      j = .(
+        Tissue = Tissue[order(- rowMeans(.SD) / sum(rowMeans(.SD)))],
+        .SD[order(- rowMeans(.SD) / sum(rowMeans(.SD)))]
+      ),
+      .SDcols = gsub(".genes.results$", "", basename(files))
+    ]
+
+    return(samples_tissue)
+
+  }
+
+  if (type == "matrix") {
+    mat <- data.table::fread(files)
+    names(mat)[1] <- "gene_id"
+    mat$gene_id <- sub("\\..*$", "", mat$gene_id)
+    samples_names <- names(mat)[-1]
+
+    samples_tissue_tmp <- merge(gtex_markers, mat, by.x = "Name", by.y = "gene_id", all.y = TRUE)
+    samples_tissue_tmp <- samples_tissue_tmp[!is.na(Tissue), ]
+    samples_tissue_tmp[1:5, 1:5]
+
+    samples_tissue <- Reduce(
+      f = function(x, y) {
+        merge(x, y, by = "Tissue", all = TRUE)
+      },
+      x = lapply(
+        X = samples_names,
+        .gtex = gtex_markers,
+        FUN = function(.id, .gtex) {
+          out <- samples_tissue_tmp[, .SD, .SDcols = c("Tissue", "TPM", .id)]
+          data.table::setnames(out, old = .id, new = "sample_tpm")
+          out <- out[
+            i = sample_tpm >= tpm_threshold & TPM >= sample_tpm,
+            j = .N,
+            by = "Tissue"
+          ]
+          data.table::setnames(out, old = "N", new = .id)
+          return(out)
+        }
+      )
+    )
+    class(samples_tissue) <- c("tissue", class(samples_tissue))
+
+    samples_tissue <- data.table::setnafill(
+      x = samples_tissue,
+      fill = 0,
+      cols = setdiff(names(samples_tissue), "Tissue")
+    )[
+      j = .(
+        Tissue = Tissue[order(- rowMeans(.SD) / sum(rowMeans(.SD)))],
+        .SD[order(- rowMeans(.SD) / sum(rowMeans(.SD)))]
+      ),
+      .SDcols = samples_names
+    ]
+    samples_tissue[1:5, 1:10]
+
+    return(samples_tissue)
+  }
 }
 
 is.unique <- function(object) {
